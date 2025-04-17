@@ -17,6 +17,19 @@ gboolean is_text_mode = FALSE;
 gchar *current_font = "Sans 12";
 GdkRGBA text_color = {0.0, 0.0, 0.0, 1.0}; // Default black
 GtkWidget *color_button = NULL; // Add color button as global variable
+#define MAX_UNDO_STACK 20  // Maximum number of states to store
+gboolean has_changes = FALSE;  // Track if any actual drawing has occurred
+gboolean has_moved = FALSE;  // Add this global variable to track if we've moved since pressing
+
+typedef struct {
+    GdkPixbuf *states[MAX_UNDO_STACK];
+    int current;  // Current position in the stack
+    int top;      // Top of the stack
+} UndoStack;
+
+UndoStack undo_stack = {.current = -1, .top = -1};
+GtkWidget *undo_button;
+GtkWidget *redo_button;
 
 // Function declarations
 static void load_image_from_file(const gchar *filename);
@@ -25,6 +38,9 @@ static void save_image(const gchar *filename);
 static void draw_on_surface(cairo_t *cr, gdouble x, gdouble y);
 static void update_drawing_area();
 static void add_text_at_position(gdouble x, gdouble y);
+static void push_undo_state(void);
+static void undo(void);
+static void redo(void);
 
 // Callback functions
 static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
@@ -43,59 +59,86 @@ static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event, gpoint
         }
         
         is_drawing = TRUE;
+        has_moved = FALSE;  // Reset movement tracker
         last_x = event->x;
         last_y = event->y;
         
-        // Create a new surface for drawing
+        // Store the initial state before any drawing
+        if (current_pixbuf) {
+            // Initialize the undo stack if it's empty
+            if (undo_stack.current == -1) {
+                undo_stack.current = 0;
+                undo_stack.top = 0;
+            }
+            
+            // Store initial state
+            GdkPixbuf *initial_state = gdk_pixbuf_copy(current_pixbuf);
+            if (initial_state) {
+                if (undo_stack.states[undo_stack.current]) {
+                    g_object_unref(undo_stack.states[undo_stack.current]);
+                }
+                undo_stack.states[undo_stack.current] = initial_state;
+            }
+        }
+        
+        return TRUE;
+    }
+    return TRUE;
+}
+
+static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+    if (event->button == GDK_BUTTON_PRIMARY && is_drawing) {
+        if (has_moved) {  // Only push state if we actually drew something
+            push_undo_state();
+            gtk_widget_set_sensitive(undo_button, TRUE);
+            gtk_widget_set_sensitive(redo_button, FALSE);
+        }
+        is_drawing = FALSE;
+        has_moved = FALSE;
+    }
+    return TRUE;
+}
+
+static gboolean on_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
+    if (is_drawing && !is_text_mode && current_pixbuf) {
+        has_moved = TRUE;  // Mark that we've moved while drawing
+        
+        // Create a new surface for the current state
         cairo_surface_t *temp_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
                                                                  gdk_pixbuf_get_width(current_pixbuf),
                                                                  gdk_pixbuf_get_height(current_pixbuf));
         cairo_t *cr = cairo_create(temp_surface);
         
-        // Draw the current image
+        // Draw current state - use current_pixbuf instead of undo stack state
         gdk_cairo_set_source_pixbuf(cr, current_pixbuf, 0, 0);
         cairo_paint(cr);
         
-        // Draw the new point
+        // Add new line
         cairo_set_source_rgba(cr, current_color.red, current_color.green, current_color.blue, current_color.alpha);
         cairo_set_line_width(cr, pen_width);
         cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
         cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-        cairo_move_to(cr, event->x, event->y);
+        cairo_move_to(cr, last_x, last_y);
         cairo_line_to(cr, event->x, event->y);
         cairo_stroke(cr);
         
-        // Update the current pixbuf
+        // Update the pixbuf
         cairo_surface_flush(temp_surface);
         GdkPixbuf *new_pixbuf = gdk_pixbuf_get_from_surface(temp_surface, 0, 0,
                                                            gdk_pixbuf_get_width(current_pixbuf),
                                                            gdk_pixbuf_get_height(current_pixbuf));
         
         if (new_pixbuf) {
-            g_object_unref(current_pixbuf);
+            if (current_pixbuf) {
+                g_object_unref(current_pixbuf);
+            }
             current_pixbuf = new_pixbuf;
+            gtk_widget_queue_draw(drawing_area);
         }
         
         cairo_destroy(cr);
         cairo_surface_destroy(temp_surface);
-        update_drawing_area();
-    }
-    return TRUE;
-}
-
-static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event, gpointer data) {
-    if (event->button == GDK_BUTTON_PRIMARY) {
-        is_drawing = FALSE;
-    }
-    return TRUE;
-}
-
-static gboolean on_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
-    if (is_drawing && !is_text_mode) {
-        cairo_t *cr = cairo_create(surface);
-        draw_on_surface(cr, event->x, event->y);
-        cairo_destroy(cr);
-        update_drawing_area();
+        
         last_x = event->x;
         last_y = event->y;
     }
@@ -212,6 +255,14 @@ static void on_copy_clicked(GtkButton *button, gpointer data) {
     }
 }
 
+static void on_undo_clicked(GtkButton *button, gpointer data) {
+    undo();
+}
+
+static void on_redo_clicked(GtkButton *button, gpointer data) {
+    redo();
+}
+
 // Main function
 int main(int argc, char *argv[]) {
     GtkWidget *window;
@@ -246,6 +297,16 @@ int main(int argc, char *argv[]) {
     open_button = gtk_button_new_with_label("Open");
     g_signal_connect(open_button, "clicked", G_CALLBACK(on_open_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox), open_button, FALSE, FALSE, 0);
+
+    // Add undo/redo buttons
+    undo_button = gtk_button_new_with_label("Undo");
+    redo_button = gtk_button_new_with_label("Redo");
+    gtk_widget_set_sensitive(undo_button, FALSE);
+    gtk_widget_set_sensitive(redo_button, FALSE);
+    g_signal_connect(undo_button, "clicked", G_CALLBACK(on_undo_clicked), NULL);
+    g_signal_connect(redo_button, "clicked", G_CALLBACK(on_redo_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox), undo_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), redo_button, FALSE, FALSE, 0);
 
     save_button = gtk_button_new_with_label("Save");
     g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), NULL);
@@ -344,6 +405,22 @@ static void load_image_from_file(const gchar *filename) {
                               gdk_pixbuf_get_width(current_pixbuf),
                               gdk_pixbuf_get_height(current_pixbuf));
     update_drawing_area();
+
+    // Clear undo stack
+    for (int i = 0; i <= undo_stack.top; i++) {
+        if (undo_stack.states[i]) {
+            g_object_unref(undo_stack.states[i]);
+            undo_stack.states[i] = NULL;
+        }
+    }
+    
+    // Reset undo stack
+    undo_stack.current = -1;
+    undo_stack.top = -1;
+    
+    // Disable both buttons initially
+    gtk_widget_set_sensitive(undo_button, FALSE);
+    gtk_widget_set_sensitive(redo_button, FALSE);
 }
 
 static void load_image_from_clipboard() {
@@ -403,6 +480,7 @@ static void draw_on_surface(cairo_t *cr, gdouble x, gdouble y) {
         if (new_pixbuf) {
             g_object_unref(current_pixbuf);
             current_pixbuf = new_pixbuf;
+            push_undo_state();
         }
     }
 }
@@ -417,12 +495,21 @@ static void add_text_at_position(gdouble x, gdouble y) {
     GtkWidget *entry;
     gint response;
 
-    // Create the dialog
+    // Store the current state before adding text
+    if (current_pixbuf) {
+        // Initialize the undo stack if it's empty
+        if (undo_stack.current == -1) {
+            undo_stack.current = 0;
+            undo_stack.top = 0;
+            undo_stack.states[0] = gdk_pixbuf_copy(current_pixbuf);
+        }
+    }
+
     dialog = gtk_dialog_new_with_buttons("Enter Text",
                                        GTK_WINDOW(gtk_widget_get_toplevel(drawing_area)),
-                                       GTK_DIALOG_MODAL,
-                                       "_Cancel", GTK_RESPONSE_CANCEL,
+                                       GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
                                        "_OK", GTK_RESPONSE_ACCEPT,
+                                       "_Cancel", GTK_RESPONSE_CANCEL,
                                        NULL);
 
     content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
@@ -433,65 +520,97 @@ static void add_text_at_position(gdouble x, gdouble y) {
     response = gtk_dialog_run(GTK_DIALOG(dialog));
     if (response == GTK_RESPONSE_ACCEPT) {
         const gchar *text = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (text && *text) {
+        if (text && *text && current_pixbuf) {  // Only proceed if we have text and a pixbuf
             // Create a new surface for drawing
-            cairo_surface_t *temp_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-                                                                     gdk_pixbuf_get_width(current_pixbuf),
-                                                                     gdk_pixbuf_get_height(current_pixbuf));
-            cairo_t *cr = cairo_create(temp_surface);
-            
+            cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+                                                               gdk_pixbuf_get_width(current_pixbuf),
+                                                               gdk_pixbuf_get_height(current_pixbuf));
+            cairo_t *cr = cairo_create(surface);
+
             // Draw the current image
             gdk_cairo_set_source_pixbuf(cr, current_pixbuf, 0, 0);
             cairo_paint(cr);
-            
-            // Parse font string
-            gchar *font_name = NULL;
-            gdouble font_size = 12.0;
-            if (current_font) {
-                // Find the last space in the font string
-                gchar *last_space = g_strrstr(current_font, " ");
-                if (last_space) {
-                    // Extract the size (everything after the last space)
-                    font_size = g_ascii_strtod(last_space + 1, NULL);
-                    // Extract the font name (everything before the last space)
-                    font_name = g_strndup(current_font, last_space - current_font);
-                } else {
-                    font_name = g_strdup(current_font);
-                }
-            }
-            
-            // Set up text properties
-            if (font_name) {
-                cairo_select_font_face(cr, font_name, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-                g_free(font_name);
-            } else {
-                cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-            }
-            cairo_set_font_size(cr, font_size);
-            
-            // Set text color
+
+            // Set up text drawing
             cairo_set_source_rgba(cr, text_color.red, text_color.green, text_color.blue, text_color.alpha);
-            
+            cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+            cairo_set_font_size(cr, 20.0);  // You might want to make this configurable
+
             // Draw the text
             cairo_move_to(cr, x, y);
             cairo_show_text(cr, text);
-            
-            // Update the current pixbuf
-            cairo_surface_flush(temp_surface);
-            GdkPixbuf *new_pixbuf = gdk_pixbuf_get_from_surface(temp_surface, 0, 0,
+
+            // Get the result as a pixbuf
+            cairo_surface_flush(surface);
+            GdkPixbuf *new_pixbuf = gdk_pixbuf_get_from_surface(surface, 0, 0,
                                                                gdk_pixbuf_get_width(current_pixbuf),
                                                                gdk_pixbuf_get_height(current_pixbuf));
-            
+
             if (new_pixbuf) {
                 g_object_unref(current_pixbuf);
                 current_pixbuf = new_pixbuf;
+                
+                // Push to undo stack
+                push_undo_state();
+                gtk_widget_set_sensitive(undo_button, TRUE);
+                gtk_widget_set_sensitive(redo_button, FALSE);
+                
+                gtk_widget_queue_draw(drawing_area);
             }
-            
+
             cairo_destroy(cr);
-            cairo_surface_destroy(temp_surface);
-            update_drawing_area();
+            cairo_surface_destroy(surface);
         }
     }
 
     gtk_widget_destroy(dialog);
+}
+
+static void push_undo_state(void) {
+    // Clear redo states
+    for (int i = undo_stack.current + 1; i <= undo_stack.top; i++) {
+        if (undo_stack.states[i]) {
+            g_object_unref(undo_stack.states[i]);
+            undo_stack.states[i] = NULL;
+        }
+    }
+
+    // Add new state
+    undo_stack.current++;
+    undo_stack.top = undo_stack.current;
+    if (current_pixbuf) {
+        if (undo_stack.states[undo_stack.current]) {
+            g_object_unref(undo_stack.states[undo_stack.current]);
+        }
+        undo_stack.states[undo_stack.current] = gdk_pixbuf_copy(current_pixbuf);
+    }
+}
+
+static void undo(void) {
+    if (undo_stack.current > 0 && undo_stack.states[undo_stack.current - 1]) {
+        undo_stack.current--;
+        if (current_pixbuf) {
+            g_object_unref(current_pixbuf);
+        }
+        current_pixbuf = gdk_pixbuf_copy(undo_stack.states[undo_stack.current]);
+        update_drawing_area();
+        gtk_widget_queue_draw(drawing_area);  // Force a redraw
+
+        // Update button sensitivity
+        gtk_widget_set_sensitive(redo_button, TRUE);
+        gtk_widget_set_sensitive(undo_button, undo_stack.current > 0);
+    }
+}
+
+static void redo(void) {
+    if (undo_stack.current < undo_stack.top) {
+        undo_stack.current++;
+        g_object_unref(current_pixbuf);
+        current_pixbuf = gdk_pixbuf_copy(undo_stack.states[undo_stack.current]);
+        update_drawing_area();
+
+        // Update button sensitivity
+        gtk_widget_set_sensitive(undo_button, TRUE);
+        gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
+    }
 } 
