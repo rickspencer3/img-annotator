@@ -297,72 +297,98 @@ int main(int argc, char *argv[]) {
     hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 0);
 
-    // Create buttons and controls
-    open_button = gtk_button_new_with_label("Open");
+    // File operations group
+    GtkWidget *file_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_box_pack_start(GTK_BOX(hbox), file_box, FALSE, FALSE, 0);
+
+    // Open button with icon
+    open_button = gtk_button_new_from_icon_name("document-open", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_widget_set_tooltip_text(open_button, "Open Image");
     g_signal_connect(open_button, "clicked", G_CALLBACK(on_open_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), open_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(file_box), open_button, FALSE, FALSE, 0);
 
-    // Add undo/redo buttons
-    undo_button = gtk_button_new_with_label("Undo");
-    redo_button = gtk_button_new_with_label("Redo");
-    gtk_widget_set_sensitive(undo_button, FALSE);
-    gtk_widget_set_sensitive(redo_button, FALSE);
-    g_signal_connect(undo_button, "clicked", G_CALLBACK(on_undo_clicked), NULL);
-    g_signal_connect(redo_button, "clicked", G_CALLBACK(on_redo_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), undo_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(hbox), redo_button, FALSE, FALSE, 0);
-
-    save_button = gtk_button_new_with_label("Save");
+    // Save button with icon
+    save_button = gtk_button_new_from_icon_name("document-save", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_widget_set_tooltip_text(save_button, "Save Image");
     g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), save_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(file_box), save_button, FALSE, FALSE, 0);
 
-    // Add the new Copy to Clipboard button
-    GtkWidget *copy_button = gtk_button_new_with_label("Copy to Clipboard");
+    // Copy button with icon
+    GtkWidget *copy_button = gtk_button_new_from_icon_name("edit-copy", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_widget_set_tooltip_text(copy_button, "Copy to Clipboard");
     g_signal_connect(copy_button, "clicked", G_CALLBACK(on_copy_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), copy_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(file_box), copy_button, FALSE, FALSE, 0);
 
+    // Add a small separator
+    gtk_box_pack_start(GTK_BOX(hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 5);
+
+    // Edit operations group
+    GtkWidget *edit_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_box_pack_start(GTK_BOX(hbox), edit_box, FALSE, FALSE, 0);
+
+    // Undo button with icon
+    undo_button = gtk_button_new_from_icon_name("edit-undo", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_widget_set_tooltip_text(undo_button, "Undo");
+    gtk_widget_set_sensitive(undo_button, FALSE);
+    g_signal_connect(undo_button, "clicked", G_CALLBACK(on_undo_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(edit_box), undo_button, FALSE, FALSE, 0);
+
+    // Redo button with icon
+    redo_button = gtk_button_new_from_icon_name("edit-redo", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_widget_set_tooltip_text(redo_button, "Redo");
+    gtk_widget_set_sensitive(redo_button, FALSE);
+    g_signal_connect(redo_button, "clicked", G_CALLBACK(on_redo_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(edit_box), redo_button, FALSE, FALSE, 0);
+
+    // Add a small separator
+    gtk_box_pack_start(GTK_BOX(hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 5);
+
+    // Tool settings group
+    GtkWidget *tool_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_box_pack_start(GTK_BOX(hbox), tool_box, FALSE, FALSE, 0);
+
+    // Color button
     color_button = gtk_color_button_new();
+    gtk_widget_set_tooltip_text(color_button, "Select Color");
     gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(color_button), &current_color);
     g_signal_connect(color_button, "color-set", G_CALLBACK(on_color_set), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), color_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(tool_box), color_button, FALSE, FALSE, 0);
 
-    // Initialize colors
-    current_color.red = 1.0;
-    current_color.green = 0.0;
-    current_color.blue = 0.0;
-    current_color.alpha = 1.0;
-
-    text_color.red = 1.0;
-    text_color.green = 0.0;
-    text_color.blue = 0.0;
-    text_color.alpha = 1.0;
-
-    // Initialize current_font
-    current_font = g_strdup("Sans 12");
-
+    // Pen width spinner
+    GtkWidget *width_label = gtk_label_new("Width:");
+    gtk_box_pack_start(GTK_BOX(tool_box), width_label, FALSE, FALSE, 0);
+    
     pen_width_spin = gtk_spin_button_new_with_range(1, 50, 1);
+    gtk_widget_set_tooltip_text(pen_width_spin, "Pen Width");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(pen_width_spin), pen_width);
     g_signal_connect(pen_width_spin, "value-changed", G_CALLBACK(on_pen_width_changed), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), pen_width_spin, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(tool_box), pen_width_spin, FALSE, FALSE, 0);
 
+    // Font button
     font_button = gtk_font_button_new();
+    gtk_widget_set_tooltip_text(font_button, "Select Font");
     gtk_font_button_set_font_name(GTK_FONT_BUTTON(font_button), current_font);
     g_signal_connect(font_button, "font-set", G_CALLBACK(on_font_set), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), font_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(tool_box), font_button, FALSE, FALSE, 0);
 
-    // Create mode selection box
+    // Add a small separator
+    gtk_box_pack_start(GTK_BOX(hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 5);
+
+    // Mode selection group
     mode_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_pack_start(GTK_BOX(hbox), mode_box, FALSE, FALSE, 0);
 
-    // Create drawing mode button
-    draw_mode_button = gtk_radio_button_new_with_label(NULL, "Drawing Mode");
+    // Drawing mode radio button
+    draw_mode_button = gtk_radio_button_new_with_label(NULL, "Drawing");
+    gtk_widget_set_tooltip_text(draw_mode_button, "Switch to Drawing Mode");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(draw_mode_button), TRUE);
     g_signal_connect(draw_mode_button, "toggled", G_CALLBACK(on_text_mode_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(mode_box), draw_mode_button, FALSE, FALSE, 0);
 
-    // Create text mode button
-    text_mode_button = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(draw_mode_button), "Text Mode");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(text_mode_button), FALSE);
+    // Text mode radio button
+    text_mode_button = gtk_radio_button_new_with_label_from_widget(
+        GTK_RADIO_BUTTON(draw_mode_button), "Text");
+    gtk_widget_set_tooltip_text(text_mode_button, "Switch to Text Mode");
     g_signal_connect(text_mode_button, "toggled", G_CALLBACK(on_text_mode_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(mode_box), text_mode_button, FALSE, FALSE, 0);
 
