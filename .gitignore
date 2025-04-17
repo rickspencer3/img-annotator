@@ -1,0 +1,18 @@
+# Binary
+image_annotator
+
+# Image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.webp
+
+# Object files
+*.o
+
+# Backup files
+*~
+*.swp 

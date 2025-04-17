@@ -205,6 +205,13 @@ static void on_text_mode_toggled(GtkToggleButton *button, gpointer data) {
     }
 }
 
+static void on_copy_clicked(GtkButton *button, gpointer data) {
+    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    if (current_pixbuf) {
+        gtk_clipboard_set_image(clipboard, current_pixbuf);
+    }
+}
+
 // Main function
 int main(int argc, char *argv[]) {
     GtkWidget *window;
@@ -243,6 +250,11 @@ int main(int argc, char *argv[]) {
     save_button = gtk_button_new_with_label("Save");
     g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox), save_button, FALSE, FALSE, 0);
+
+    // Add the new Copy to Clipboard button
+    GtkWidget *copy_button = gtk_button_new_with_label("Copy to Clipboard");
+    g_signal_connect(copy_button, "clicked", G_CALLBACK(on_copy_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox), copy_button, FALSE, FALSE, 0);
 
     color_button = gtk_color_button_new();
     gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(color_button), &current_color);
