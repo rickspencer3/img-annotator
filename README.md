@@ -1,3 +1,4 @@
+I have not even read a single line of this code. It has been completely generated with Cursor (except for this specific line in the readme. I will modify this in case I write any code myself.)
 # Image Annotator
 
 A simple image annotation tool for GNOME that allows you to draw on images and add text annotations.
