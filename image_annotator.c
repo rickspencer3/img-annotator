@@ -41,6 +41,7 @@ static void add_text_at_position(gdouble x, gdouble y);
 static void push_undo_state(void);
 static void undo(void);
 static void redo(void);
+static void print_available_icons(void);
 
 // Callback functions
 static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
@@ -378,17 +379,20 @@ int main(int argc, char *argv[]) {
     mode_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_pack_start(GTK_BOX(hbox), mode_box, FALSE, FALSE, 0);
 
-    // Drawing mode radio button
-    draw_mode_button = gtk_radio_button_new_with_label(NULL, "Drawing");
-    gtk_widget_set_tooltip_text(draw_mode_button, "Switch to Drawing Mode");
+    // Drawing mode radio button with icon
+    GtkWidget *draw_icon = gtk_image_new_from_icon_name("x-office-drawing", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    draw_mode_button = gtk_radio_button_new(NULL);
+    gtk_button_set_image(GTK_BUTTON(draw_mode_button), draw_icon);
+    gtk_widget_set_tooltip_text(draw_mode_button, "Drawing Mode");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(draw_mode_button), TRUE);
     g_signal_connect(draw_mode_button, "toggled", G_CALLBACK(on_text_mode_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(mode_box), draw_mode_button, FALSE, FALSE, 0);
 
-    // Text mode radio button
-    text_mode_button = gtk_radio_button_new_with_label_from_widget(
-        GTK_RADIO_BUTTON(draw_mode_button), "Text");
-    gtk_widget_set_tooltip_text(text_mode_button, "Switch to Text Mode");
+    // Text mode radio button with icon
+    GtkWidget *text_icon = gtk_image_new_from_icon_name("insert-text", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    text_mode_button = gtk_radio_button_new_from_widget(GTK_RADIO_BUTTON(draw_mode_button));
+    gtk_button_set_image(GTK_BUTTON(text_mode_button), text_icon);
+    gtk_widget_set_tooltip_text(text_mode_button, "Text Mode");
     g_signal_connect(text_mode_button, "toggled", G_CALLBACK(on_text_mode_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(mode_box), text_mode_button, FALSE, FALSE, 0);
 
@@ -413,6 +417,9 @@ int main(int argc, char *argv[]) {
     } else {
         load_image_from_clipboard();
     }
+
+    // Add this before creating the buttons:
+    print_available_icons();
 
     gtk_main();
 
@@ -643,4 +650,23 @@ static void redo(void) {
         gtk_widget_set_sensitive(undo_button, TRUE);
         gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
     }
+}
+
+// Add this helper function
+static void print_available_icons(void) {
+    GtkIconTheme *theme = gtk_icon_theme_get_default();
+    GList *list = gtk_icon_theme_list_icons(theme, NULL);
+    GList *l;
+    
+    g_print("Available icons:\n");
+    for (l = list; l != NULL; l = l->next) {
+        if (strstr((char*)l->data, "edit") || 
+            strstr((char*)l->data, "draw") || 
+            strstr((char*)l->data, "pencil") ||
+            strstr((char*)l->data, "pen")) {
+            g_print("%s\n", (char*)l->data);
+        }
+    }
+    
+    g_list_free_full(list, g_free);
 } 
