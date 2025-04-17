@@ -263,6 +263,10 @@ static void on_redo_clicked(GtkButton *button, gpointer data) {
     redo();
 }
 
+static void on_entry_activate(GtkEntry *entry, GtkDialog *dialog) {
+    gtk_dialog_response(dialog, GTK_RESPONSE_ACCEPT);
+}
+
 // Main function
 int main(int argc, char *argv[]) {
     GtkWidget *window;
@@ -497,7 +501,6 @@ static void add_text_at_position(gdouble x, gdouble y) {
 
     // Store the current state before adding text
     if (current_pixbuf) {
-        // Initialize the undo stack if it's empty
         if (undo_stack.current == -1) {
             undo_stack.current = 0;
             undo_stack.top = 0;
@@ -514,33 +517,35 @@ static void add_text_at_position(gdouble x, gdouble y) {
 
     content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     entry = gtk_entry_new();
+    
+    // Connect the activate signal (Enter key) to submit the dialog
+    g_signal_connect(entry, "activate", G_CALLBACK(on_entry_activate), dialog);
+    
     gtk_container_add(GTK_CONTAINER(content_area), entry);
     gtk_widget_show_all(dialog);
+    
+    // Set focus to the entry widget
+    gtk_widget_grab_focus(entry);
 
     response = gtk_dialog_run(GTK_DIALOG(dialog));
     if (response == GTK_RESPONSE_ACCEPT) {
         const gchar *text = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (text && *text && current_pixbuf) {  // Only proceed if we have text and a pixbuf
-            // Create a new surface for drawing
+        if (text && *text && current_pixbuf) {
             cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
                                                                gdk_pixbuf_get_width(current_pixbuf),
                                                                gdk_pixbuf_get_height(current_pixbuf));
             cairo_t *cr = cairo_create(surface);
 
-            // Draw the current image
             gdk_cairo_set_source_pixbuf(cr, current_pixbuf, 0, 0);
             cairo_paint(cr);
 
-            // Set up text drawing
             cairo_set_source_rgba(cr, text_color.red, text_color.green, text_color.blue, text_color.alpha);
             cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-            cairo_set_font_size(cr, 20.0);  // You might want to make this configurable
+            cairo_set_font_size(cr, 20.0);
 
-            // Draw the text
             cairo_move_to(cr, x, y);
             cairo_show_text(cr, text);
 
-            // Get the result as a pixbuf
             cairo_surface_flush(surface);
             GdkPixbuf *new_pixbuf = gdk_pixbuf_get_from_surface(surface, 0, 0,
                                                                gdk_pixbuf_get_width(current_pixbuf),
@@ -550,7 +555,6 @@ static void add_text_at_position(gdouble x, gdouble y) {
                 g_object_unref(current_pixbuf);
                 current_pixbuf = new_pixbuf;
                 
-                // Push to undo stack
                 push_undo_state();
                 gtk_widget_set_sensitive(undo_button, TRUE);
                 gtk_widget_set_sensitive(redo_button, FALSE);
