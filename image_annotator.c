@@ -380,13 +380,16 @@ int main(int argc, char *argv[]) {
     // Create main window
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "Image Annotator");
+    gtk_window_set_default_size(GTK_WINDOW(window), 1000, 600);  // Increased from 800 to 1000
+    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
-    // Create main container
+    // Create main container with more padding
     vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
     gtk_container_add(GTK_CONTAINER(window), vbox);
 
-    // Create toolbar
-    hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    // Create toolbar with more spacing
+    hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);  // Increased spacing between items
+    gtk_container_set_border_width(GTK_CONTAINER(hbox), 5);  // Add padding around the toolbar
     gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 5);
 
     // File operations group
@@ -563,9 +566,6 @@ int main(int argc, char *argv[]) {
     gtk_container_add(GTK_CONTAINER(padding_box), drawing_area);
     gtk_container_add(GTK_CONTAINER(scrolled_window), padding_box);
     gtk_box_pack_start(GTK_BOX(vbox), scrolled_window, TRUE, TRUE, 0);
-
-    // Set a reasonable default window size
-    gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
 
     // Show all widgets
     gtk_widget_show_all(window);
