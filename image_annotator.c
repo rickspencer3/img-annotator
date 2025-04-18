@@ -55,10 +55,20 @@ static void on_crop_mode_toggled(GtkToggleButton *button, gpointer data);
 // Callback functions
 static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
     if (current_pixbuf) {
+        // Set the drawing area size to match the image
+        gtk_widget_set_size_request(drawing_area, 
+                                  gdk_pixbuf_get_width(current_pixbuf),
+                                  gdk_pixbuf_get_height(current_pixbuf));
+        
+        // Draw white background
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        cairo_paint(cr);
+        
+        // Draw the image
         gdk_cairo_set_source_pixbuf(cr, current_pixbuf, 0, 0);
         cairo_paint(cr);
         
-        // Draw crop selection rectangle
+        // Draw crop selection rectangle if needed
         if (is_crop_mode && (is_selecting || (crop_start_x != crop_end_x && crop_start_y != crop_end_y))) {
             double x = MIN(crop_start_x, crop_end_x);
             double y = MIN(crop_start_y, crop_end_y);
@@ -374,8 +384,6 @@ int main(int argc, char *argv[]) {
     // Create main window
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "Image Annotator");
-    gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
-    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     // Create main container
     vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
@@ -383,7 +391,7 @@ int main(int argc, char *argv[]) {
 
     // Create toolbar
     hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 5);
 
     // File operations group
     GtkWidget *file_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -501,17 +509,50 @@ int main(int argc, char *argv[]) {
     g_signal_connect(crop_button, "clicked", G_CALLBACK(perform_crop), NULL);
     gtk_box_pack_start(GTK_BOX(hbox), crop_button, FALSE, FALSE, 0);
 
+    // Create a scrolled window
+    GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
+                                 GTK_POLICY_AUTOMATIC,
+                                 GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scrolled_window, TRUE);
+    gtk_widget_set_hexpand(scrolled_window, TRUE);
+    
+    // Create a container for the drawing area with padding
+    GtkWidget *padding_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_margin_start(padding_box, 20);   // Increased to 20px
+    gtk_widget_set_margin_end(padding_box, 20);     // Increased to 20px
+    gtk_widget_set_margin_top(padding_box, 20);     // Increased to 20px
+    gtk_widget_set_margin_bottom(padding_box, 20);  // Increased to 20px
+    
+    // Set grey background for the padding area
+    GtkStyleContext *style_context = gtk_widget_get_style_context(scrolled_window);
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(provider,
+        "scrolledwindow { background-color: #E0E0E0; }", -1, NULL);
+    gtk_style_context_add_provider(style_context,
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+
     // Create drawing area
     drawing_area = gtk_drawing_area_new();
-    gtk_box_pack_start(GTK_BOX(vbox), drawing_area, TRUE, TRUE, 0);
-    gtk_widget_set_events(drawing_area, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
-    
-    // Connect signals
-    g_signal_connect(drawing_area, "realize", G_CALLBACK(on_drawing_area_realize), NULL);
+    gtk_widget_set_size_request(drawing_area, 400, 300);  // Minimum size
     g_signal_connect(drawing_area, "draw", G_CALLBACK(on_draw), NULL);
     g_signal_connect(drawing_area, "button-press-event", G_CALLBACK(on_button_press), NULL);
     g_signal_connect(drawing_area, "button-release-event", G_CALLBACK(on_button_release), NULL);
     g_signal_connect(drawing_area, "motion-notify-event", G_CALLBACK(on_motion_notify), NULL);
+    g_signal_connect(drawing_area, "realize", G_CALLBACK(on_drawing_area_realize), NULL);
+    gtk_widget_set_events(drawing_area, gtk_widget_get_events(drawing_area) |
+                         GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+                         GDK_POINTER_MOTION_MASK);
+
+    // Pack everything together
+    gtk_container_add(GTK_CONTAINER(padding_box), drawing_area);
+    gtk_container_add(GTK_CONTAINER(scrolled_window), padding_box);
+    gtk_box_pack_start(GTK_BOX(vbox), scrolled_window, TRUE, TRUE, 0);
+
+    // Set a reasonable default window size
+    gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
 
     // Show all widgets
     gtk_widget_show_all(window);
