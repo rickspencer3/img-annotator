@@ -90,6 +90,9 @@ static gboolean on_mode_combo_tooltip(GtkWidget *widget, gint x, gint y,
                                     gpointer data);
 static void on_popup_shown(GtkWidget *popup_window, gpointer data);
 static void on_popup_hidden(GtkWidget *popup_window, gpointer data);
+static void on_resize_clicked(GtkButton *button, gpointer data);
+static void update_pixel_entry(GtkSpinButton *spin_button, gpointer percent_spin);
+static void update_percent_entry(GtkSpinButton *spin_button, gpointer pixel_spin);
 
 // Callback functions
 static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
@@ -245,7 +248,7 @@ static gboolean on_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpoin
         
         if (new_pixbuf) {
             if (current_pixbuf) {
-                g_object_unref(current_pixbuf);
+            g_object_unref(current_pixbuf);
             }
             current_pixbuf = new_pixbuf;
             gtk_widget_queue_draw(drawing_area);
@@ -452,7 +455,7 @@ int main(int argc, char *argv[]) {
     // Pen width spinner
     GtkWidget *width_label = gtk_label_new("Width:");
     gtk_box_pack_start(GTK_BOX(tool_box), width_label, FALSE, FALSE, 0);
-    
+
     pen_width_spin = gtk_spin_button_new_with_range(1, 50, 1);
     gtk_widget_set_tooltip_text(pen_width_spin, "Pen Width");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(pen_width_spin), pen_width);
@@ -524,6 +527,12 @@ int main(int argc, char *argv[]) {
     gtk_widget_set_sensitive(crop_button, FALSE);
     g_signal_connect(crop_button, "clicked", G_CALLBACK(perform_crop), NULL);
     gtk_box_pack_start(GTK_BOX(hbox), crop_button, FALSE, FALSE, 0);
+
+    // Add resize button after the other buttons
+    GtkWidget *resize_button = gtk_button_new_from_icon_name("view-fullscreen", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_widget_set_tooltip_text(resize_button, "Resize Image");
+    g_signal_connect(resize_button, "clicked", G_CALLBACK(on_resize_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox), resize_button, FALSE, FALSE, 0);
 
     // Create a scrolled window
     GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
@@ -599,7 +608,7 @@ static void load_image_from_file(const gchar *filename) {
                               gdk_pixbuf_get_height(current_pixbuf));
     update_drawing_area();
 
-    // Clear undo stack
+    // Initialize undo stack with initial state
     for (int i = 0; i <= undo_stack.top; i++) {
         if (undo_stack.states[i]) {
             g_object_unref(undo_stack.states[i]);
@@ -611,7 +620,10 @@ static void load_image_from_file(const gchar *filename) {
     undo_stack.current = -1;
     undo_stack.top = -1;
     
-    // Disable both buttons initially
+    // Push initial state
+    push_undo_state();
+    
+    // Disable undo since this is the initial state
     gtk_widget_set_sensitive(undo_button, FALSE);
     gtk_widget_set_sensitive(redo_button, FALSE);
 }
@@ -633,18 +645,22 @@ static void load_image_from_clipboard() {
             gtk_widget_set_sensitive(crop_button, FALSE);
         }
         
-        // Reset undo stack and store initial state
+        // Initialize undo stack with initial state
         for (int i = 0; i <= undo_stack.top; i++) {
             if (undo_stack.states[i]) {
                 g_object_unref(undo_stack.states[i]);
                 undo_stack.states[i] = NULL;
             }
         }
-        undo_stack.current = 0;  // Set to 0 instead of -1
-        undo_stack.top = 0;
-        undo_stack.states[0] = gdk_pixbuf_copy(current_pixbuf);  // Store initial state
         
-        // Initially no undo/redo available
+        // Reset undo stack
+        undo_stack.current = -1;
+        undo_stack.top = -1;
+        
+        // Push initial state
+        push_undo_state();
+        
+        // Disable undo since this is the initial state
         gtk_widget_set_sensitive(undo_button, FALSE);
         gtk_widget_set_sensitive(redo_button, FALSE);
         
@@ -735,13 +751,13 @@ static void add_text_at_position(gdouble x, gdouble y) {
         const gchar *text = gtk_entry_get_text(GTK_ENTRY(entry));
         if (text && *text && current_pixbuf) {
             cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-                                                               gdk_pixbuf_get_width(current_pixbuf),
-                                                               gdk_pixbuf_get_height(current_pixbuf));
+                                                                     gdk_pixbuf_get_width(current_pixbuf),
+                                                                     gdk_pixbuf_get_height(current_pixbuf));
             cairo_t *cr = cairo_create(surface);
-
+            
             gdk_cairo_set_source_pixbuf(cr, current_pixbuf, 0, 0);
             cairo_paint(cr);
-
+            
             cairo_set_source_rgba(cr, text_color.red, text_color.green, text_color.blue, text_color.alpha);
             
             // Parse the font string to get size and family
@@ -760,19 +776,19 @@ static void add_text_at_position(gdouble x, gdouble y) {
 
             cairo_move_to(cr, x, y);
             cairo_show_text(cr, text);
-
+            
             cairo_surface_flush(surface);
             GdkPixbuf *new_pixbuf = gdk_pixbuf_get_from_surface(surface, 0, 0,
                                                                gdk_pixbuf_get_width(current_pixbuf),
                                                                gdk_pixbuf_get_height(current_pixbuf));
-
+            
             if (new_pixbuf) {
                 g_object_unref(current_pixbuf);
                 current_pixbuf = new_pixbuf;
                 push_undo_state();
                 gtk_widget_queue_draw(drawing_area);
             }
-
+            
             cairo_destroy(cr);
             cairo_surface_destroy(surface);
         }
@@ -782,21 +798,14 @@ static void add_text_at_position(gdouble x, gdouble y) {
 }
 
 static void push_undo_state(void) {
+    g_print("Push: current=%d, top=%d\n", undo_stack.current, undo_stack.top);
+    
     // Clear redo states
     for (int i = undo_stack.current + 1; i <= undo_stack.top; i++) {
         if (undo_stack.states[i]) {
             g_object_unref(undo_stack.states[i]);
             undo_stack.states[i] = NULL;
         }
-    }
-
-    // Shift states if we're at max capacity
-    if (undo_stack.current >= MAX_UNDO_STACK - 1) {
-        g_object_unref(undo_stack.states[0]);
-        for (int i = 0; i < undo_stack.current; i++) {
-            undo_stack.states[i] = undo_stack.states[i + 1];
-        }
-        undo_stack.current--;
     }
 
     // Add new state
@@ -807,22 +816,41 @@ static void push_undo_state(void) {
             g_object_unref(undo_stack.states[undo_stack.current]);
         }
         undo_stack.states[undo_stack.current] = gdk_pixbuf_copy(current_pixbuf);
+        g_print("Stored pixbuf at %d: %dx%d\n", undo_stack.current, 
+                gdk_pixbuf_get_width(undo_stack.states[undo_stack.current]),
+                gdk_pixbuf_get_height(undo_stack.states[undo_stack.current]));
     }
 
-    // Update button sensitivity
+    g_print("After Push: current=%d, top=%d\n", undo_stack.current, undo_stack.top);
+    
+    // Update button sensitivity - enable undo if we have more than one state
     gtk_widget_set_sensitive(undo_button, undo_stack.current > 0);
     gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
 }
 
 static void undo(void) {
-    if (undo_stack.current > 0) {
+    g_print("Undo: current=%d, top=%d\n", undo_stack.current, undo_stack.top);
+    
+    if (undo_stack.current > 0 && undo_stack.states[undo_stack.current - 1]) {
         undo_stack.current--;
         if (current_pixbuf) {
             g_object_unref(current_pixbuf);
         }
         current_pixbuf = gdk_pixbuf_copy(undo_stack.states[undo_stack.current]);
+        
+        g_print("Undoing to size: %dx%d\n", 
+                gdk_pixbuf_get_width(current_pixbuf),
+                gdk_pixbuf_get_height(current_pixbuf));
+        
+        // Update drawing area size
+        gtk_widget_set_size_request(drawing_area, 
+                                  gdk_pixbuf_get_width(current_pixbuf),
+                                  gdk_pixbuf_get_height(current_pixbuf));
+        
         gtk_widget_queue_draw(drawing_area);
-
+        
+        g_print("After Undo: current=%d, top=%d\n", undo_stack.current, undo_stack.top);
+        
         // Update button sensitivity
         gtk_widget_set_sensitive(undo_button, undo_stack.current > 0);
         gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
@@ -830,14 +858,28 @@ static void undo(void) {
 }
 
 static void redo(void) {
-    if (undo_stack.current < undo_stack.top) {
+    g_print("Redo: current=%d, top=%d\n", undo_stack.current, undo_stack.top);
+    
+    if (undo_stack.current < undo_stack.top && undo_stack.states[undo_stack.current + 1]) {
         undo_stack.current++;
         if (current_pixbuf) {
             g_object_unref(current_pixbuf);
         }
         current_pixbuf = gdk_pixbuf_copy(undo_stack.states[undo_stack.current]);
+        
+        g_print("Redoing to size: %dx%d\n", 
+                gdk_pixbuf_get_width(current_pixbuf),
+                gdk_pixbuf_get_height(current_pixbuf));
+        
+        // Update drawing area size
+        gtk_widget_set_size_request(drawing_area, 
+                                  gdk_pixbuf_get_width(current_pixbuf),
+                                  gdk_pixbuf_get_height(current_pixbuf));
+        
         gtk_widget_queue_draw(drawing_area);
-
+        
+        g_print("After Redo: current=%d, top=%d\n", undo_stack.current, undo_stack.top);
+        
         // Update button sensitivity
         gtk_widget_set_sensitive(undo_button, undo_stack.current > 0);
         gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
@@ -1035,4 +1077,122 @@ static gboolean on_combo_button_press(GtkWidget *widget, GdkEventButton *event, 
         return TRUE;
     }
     return FALSE;
+}
+
+// Add the resize function
+static void on_resize_clicked(GtkButton *button, gpointer data) {
+    if (!current_pixbuf) return;
+
+    GtkWidget *dialog, *content_area, *grid;
+    GtkWidget *pixel_label, *percent_label;
+    GtkWidget *pixel_spin, *percent_spin;
+    gint response;
+    
+    int current_width = gdk_pixbuf_get_width(current_pixbuf);
+    
+    // Create dialog
+    dialog = gtk_dialog_new_with_buttons("Resize Image",
+                                       GTK_WINDOW(gtk_widget_get_toplevel(drawing_area)),
+                                       GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                                       "_Cancel", GTK_RESPONSE_CANCEL,
+                                       "_Resize", GTK_RESPONSE_ACCEPT,
+                                       NULL);
+    
+    content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    
+    // Create grid for layout
+    grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    
+    // Width in pixels
+    pixel_label = gtk_label_new("Width (pixels):");
+    gtk_grid_attach(GTK_GRID(grid), pixel_label, 0, 0, 1, 1);
+    
+    pixel_spin = gtk_spin_button_new_with_range(1, 10000, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(pixel_spin), current_width);
+    gtk_grid_attach(GTK_GRID(grid), pixel_spin, 1, 0, 1, 1);
+    
+    // Width as percentage
+    percent_label = gtk_label_new("Width (%):");
+    gtk_grid_attach(GTK_GRID(grid), percent_label, 0, 1, 1, 1);
+    
+    percent_spin = gtk_spin_button_new_with_range(1, 400, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(percent_spin), 100);
+    gtk_grid_attach(GTK_GRID(grid), percent_spin, 1, 1, 1, 1);
+    
+    // Connect signals to keep values in sync
+    g_signal_connect(pixel_spin, "value-changed", 
+                    G_CALLBACK(update_percent_entry), percent_spin);
+    g_signal_connect(percent_spin, "value-changed", 
+                    G_CALLBACK(update_pixel_entry), pixel_spin);
+    
+    gtk_container_add(GTK_CONTAINER(content_area), grid);
+    gtk_widget_show_all(dialog);
+    
+    response = gtk_dialog_run(GTK_DIALOG(dialog));
+    if (response == GTK_RESPONSE_ACCEPT) {
+        int new_width = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(pixel_spin));
+        int current_height = gdk_pixbuf_get_height(current_pixbuf);
+        
+        // Calculate new height maintaining aspect ratio
+        int new_height = (current_height * new_width) / current_width;
+        
+        g_print("Resizing from %dx%d to %dx%d\n", current_width, current_height, new_width, new_height);
+        
+        // Create resized pixbuf
+        GdkPixbuf *resized = gdk_pixbuf_scale_simple(current_pixbuf,
+                                                    new_width,
+                                                    new_height,
+                                                    GDK_INTERP_BILINEAR);
+        
+        if (resized) {
+            // Store current state before modifying
+            push_undo_state();
+            
+            // Update current pixbuf
+            g_object_unref(current_pixbuf);
+            current_pixbuf = resized;
+            
+            // Update drawing area size
+            gtk_widget_set_size_request(drawing_area, new_width, new_height);
+            
+            // Push the resized state
+            push_undo_state();
+            
+            gtk_widget_queue_draw(drawing_area);
+        }
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+// Add the spin button update callbacks
+static void update_pixel_entry(GtkSpinButton *spin_button, gpointer pixel_spin) {
+    if (!current_pixbuf) return;
+    
+    // Get the percentage value
+    double percent = gtk_spin_button_get_value(spin_button);
+    int current_width = gdk_pixbuf_get_width(current_pixbuf);
+    int new_width = (current_width * percent) / 100;
+    
+    // Block the signal to prevent recursive updates
+    g_signal_handlers_block_by_func(pixel_spin, update_percent_entry, spin_button);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(pixel_spin), new_width);
+    g_signal_handlers_unblock_by_func(pixel_spin, update_percent_entry, spin_button);
+}
+
+static void update_percent_entry(GtkSpinButton *spin_button, gpointer percent_spin) {
+    if (!current_pixbuf) return;
+    
+    // Get the pixel value
+    int new_width = gtk_spin_button_get_value_as_int(spin_button);
+    int current_width = gdk_pixbuf_get_width(current_pixbuf);
+    double percent = (new_width * 100.0) / current_width;
+    
+    // Block the signal to prevent recursive updates
+    g_signal_handlers_block_by_func(percent_spin, update_pixel_entry, spin_button);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(percent_spin), percent);
+    g_signal_handlers_unblock_by_func(percent_spin, update_pixel_entry, spin_button);
 } 
