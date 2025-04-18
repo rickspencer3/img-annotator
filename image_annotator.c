@@ -41,7 +41,6 @@ static void add_text_at_position(gdouble x, gdouble y);
 static void push_undo_state(void);
 static void undo(void);
 static void redo(void);
-static void print_available_icons(void);
 
 // Callback functions
 static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
@@ -418,9 +417,6 @@ int main(int argc, char *argv[]) {
         load_image_from_clipboard();
     }
 
-    // Add this before creating the buttons:
-    print_available_icons();
-
     gtk_main();
 
     return 0;
@@ -650,23 +646,4 @@ static void redo(void) {
         gtk_widget_set_sensitive(undo_button, TRUE);
         gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
     }
-}
-
-// Add this helper function
-static void print_available_icons(void) {
-    GtkIconTheme *theme = gtk_icon_theme_get_default();
-    GList *list = gtk_icon_theme_list_icons(theme, NULL);
-    GList *l;
-    
-    g_print("Available icons:\n");
-    for (l = list; l != NULL; l = l->next) {
-        if (strstr((char*)l->data, "edit") || 
-            strstr((char*)l->data, "draw") || 
-            strstr((char*)l->data, "pencil") ||
-            strstr((char*)l->data, "pen")) {
-            g_print("%s\n", (char*)l->data);
-        }
-    }
-    
-    g_list_free_full(list, g_free);
 } 
