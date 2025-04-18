@@ -20,6 +20,14 @@ GtkWidget *color_button = NULL; // Add color button as global variable
 #define MAX_UNDO_STACK 20  // Maximum number of states to store
 gboolean has_changes = FALSE;  // Track if any actual drawing has occurred
 gboolean has_moved = FALSE;  // Add this global variable to track if we've moved since pressing
+gboolean is_crop_mode = FALSE;
+gboolean is_selecting = FALSE;
+gdouble crop_start_x = 0;
+gdouble crop_start_y = 0;
+gdouble crop_end_x = 0;
+gdouble crop_end_y = 0;
+GtkWidget *crop_button = NULL;  // Button to perform crop
+GtkWidget *crop_mode_button = NULL;  // Radio button for crop mode
 
 typedef struct {
     GdkPixbuf *states[MAX_UNDO_STACK];
@@ -41,12 +49,39 @@ static void add_text_at_position(gdouble x, gdouble y);
 static void push_undo_state(void);
 static void undo(void);
 static void redo(void);
+static void perform_crop(void);
+static void on_crop_mode_toggled(GtkToggleButton *button, gpointer data);
 
 // Callback functions
 static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
     if (current_pixbuf) {
         gdk_cairo_set_source_pixbuf(cr, current_pixbuf, 0, 0);
         cairo_paint(cr);
+        
+        // Draw crop selection rectangle
+        if (is_crop_mode && (is_selecting || (crop_start_x != crop_end_x && crop_start_y != crop_end_y))) {
+            double x = MIN(crop_start_x, crop_end_x);
+            double y = MIN(crop_start_y, crop_end_y);
+            double width = abs(crop_end_x - crop_start_x);
+            double height = abs(crop_end_y - crop_start_y);
+            
+            // Draw semi-transparent overlay
+            cairo_set_source_rgba(cr, 0, 0, 0, 0.5);
+            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+            
+            // Draw the darkened areas around the selection
+            cairo_rectangle(cr, 0, 0, gdk_pixbuf_get_width(current_pixbuf),
+                          gdk_pixbuf_get_height(current_pixbuf));
+            cairo_rectangle(cr, x, y, width, height);
+            cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+            cairo_fill(cr);
+            
+            // Draw selection rectangle
+            cairo_set_source_rgb(cr, 1, 1, 1);
+            cairo_set_line_width(cr, 1);
+            cairo_rectangle(cr, x - 0.5, y - 0.5, width + 1, height + 1);
+            cairo_stroke(cr);
+        }
     }
     return FALSE;
 }
@@ -58,8 +93,16 @@ static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event, gpoint
             return TRUE;
         }
         
+        if (is_crop_mode) {
+            is_selecting = TRUE;
+            crop_start_x = crop_end_x = event->x;
+            crop_start_y = crop_end_y = event->y;
+            gtk_widget_queue_draw(drawing_area);
+            return TRUE;
+        }
+        
         is_drawing = TRUE;
-        has_moved = FALSE;  // Reset movement tracker
+        has_moved = FALSE;
         last_x = event->x;
         last_y = event->y;
         
@@ -87,19 +130,42 @@ static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event, gpoint
 }
 
 static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event, gpointer data) {
-    if (event->button == GDK_BUTTON_PRIMARY && is_drawing) {
-        if (has_moved) {  // Only push state if we actually drew something
-            push_undo_state();
-            gtk_widget_set_sensitive(undo_button, TRUE);
-            gtk_widget_set_sensitive(redo_button, FALSE);
+    if (event->button == GDK_BUTTON_PRIMARY) {
+        if (is_selecting && is_crop_mode) {
+            is_selecting = FALSE;
+            crop_end_x = event->x;
+            crop_end_y = event->y;
+            
+            // Enable crop button if we have a valid selection
+            int width = abs(crop_end_x - crop_start_x);
+            int height = abs(crop_end_y - crop_start_y);
+            gtk_widget_set_sensitive(crop_button, width > 1 && height > 1);
+            
+            gtk_widget_queue_draw(drawing_area);
+            return TRUE;
         }
-        is_drawing = FALSE;
-        has_moved = FALSE;
+        
+        if (is_drawing) {
+            if (has_moved) {
+                push_undo_state();
+                gtk_widget_set_sensitive(undo_button, TRUE);
+                gtk_widget_set_sensitive(redo_button, FALSE);
+            }
+            is_drawing = FALSE;
+            has_moved = FALSE;
+        }
     }
     return TRUE;
 }
 
 static gboolean on_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
+    if (is_selecting && is_crop_mode) {
+        crop_end_x = event->x;
+        crop_end_y = event->y;
+        gtk_widget_queue_draw(drawing_area);
+        return TRUE;
+    }
+    
     if (is_drawing && !is_text_mode && current_pixbuf) {
         has_moved = TRUE;  // Mark that we've moved while drawing
         
@@ -267,6 +333,28 @@ static void on_entry_activate(GtkEntry *entry, GtkDialog *dialog) {
     gtk_dialog_response(dialog, GTK_RESPONSE_ACCEPT);
 }
 
+static void on_crop_mode_toggled(GtkToggleButton *button, gpointer data) {
+    is_crop_mode = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(crop_mode_button));
+    is_text_mode = FALSE;
+    is_drawing = FALSE;
+    is_selecting = FALSE;
+    
+    // Reset crop coordinates when leaving crop mode
+    if (!is_crop_mode) {
+        crop_start_x = crop_start_y = crop_end_x = crop_end_y = 0;
+        gtk_widget_queue_draw(drawing_area);
+    }
+    
+    // Update cursor
+    if (gtk_widget_get_realized(drawing_area)) {
+        GdkWindow *window = gtk_widget_get_window(drawing_area);
+        GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(),
+            is_crop_mode ? "crosshair" : "default");
+        gdk_window_set_cursor(window, cursor);
+        g_object_unref(cursor);
+    }
+}
+
 // Main function
 int main(int argc, char *argv[]) {
     GtkWidget *window;
@@ -395,6 +483,24 @@ int main(int argc, char *argv[]) {
     g_signal_connect(text_mode_button, "toggled", G_CALLBACK(on_text_mode_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(mode_box), text_mode_button, FALSE, FALSE, 0);
 
+    // Crop mode radio button
+    crop_mode_button = gtk_radio_button_new_from_widget(GTK_RADIO_BUTTON(draw_mode_button));
+    GtkWidget *crop_icon = gtk_image_new_from_icon_name("edit-cut", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_button_set_image(GTK_BUTTON(crop_mode_button), crop_icon);
+    gtk_widget_set_tooltip_text(crop_mode_button, "Crop Mode");
+    g_signal_connect(crop_mode_button, "toggled", G_CALLBACK(on_crop_mode_toggled), NULL);
+    gtk_box_pack_start(GTK_BOX(mode_box), crop_mode_button, FALSE, FALSE, 0);
+
+    // Add a separator
+    gtk_box_pack_start(GTK_BOX(hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 5);
+
+    // Add crop button
+    crop_button = gtk_button_new_from_icon_name("edit-cut", GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_widget_set_tooltip_text(crop_button, "Crop Selection");
+    gtk_widget_set_sensitive(crop_button, FALSE);
+    g_signal_connect(crop_button, "clicked", G_CALLBACK(perform_crop), NULL);
+    gtk_box_pack_start(GTK_BOX(hbox), crop_button, FALSE, FALSE, 0);
+
     // Create drawing area
     drawing_area = gtk_drawing_area_new();
     gtk_box_pack_start(GTK_BOX(vbox), drawing_area, TRUE, TRUE, 0);
@@ -461,15 +567,34 @@ static void load_image_from_clipboard() {
     GdkPixbuf *pixbuf = gtk_clipboard_wait_for_image(clipboard);
     
     if (pixbuf) {
-        original_pixbuf = pixbuf;
-        current_pixbuf = gdk_pixbuf_copy(original_pixbuf);
-        surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-                                           gdk_pixbuf_get_width(current_pixbuf),
-                                           gdk_pixbuf_get_height(current_pixbuf));
-        gtk_widget_set_size_request(drawing_area,
-                                  gdk_pixbuf_get_width(current_pixbuf),
-                                  gdk_pixbuf_get_height(current_pixbuf));
-        update_drawing_area();
+        if (current_pixbuf) {
+            g_object_unref(current_pixbuf);
+        }
+        current_pixbuf = pixbuf;
+        
+        // Reset crop state
+        crop_start_x = crop_start_y = crop_end_x = crop_end_y = 0;
+        is_selecting = FALSE;
+        if (crop_button) {
+            gtk_widget_set_sensitive(crop_button, FALSE);
+        }
+        
+        // Reset undo stack and store initial state
+        for (int i = 0; i <= undo_stack.top; i++) {
+            if (undo_stack.states[i]) {
+                g_object_unref(undo_stack.states[i]);
+                undo_stack.states[i] = NULL;
+            }
+        }
+        undo_stack.current = 0;  // Set to 0 instead of -1
+        undo_stack.top = 0;
+        undo_stack.states[0] = gdk_pixbuf_copy(current_pixbuf);  // Store initial state
+        
+        // Initially no undo/redo available
+        gtk_widget_set_sensitive(undo_button, FALSE);
+        gtk_widget_set_sensitive(redo_button, FALSE);
+        
+        gtk_widget_queue_draw(drawing_area);
     }
 }
 
@@ -608,6 +733,15 @@ static void push_undo_state(void) {
         }
     }
 
+    // Shift states if we're at max capacity
+    if (undo_stack.current >= MAX_UNDO_STACK - 1) {
+        g_object_unref(undo_stack.states[0]);
+        for (int i = 0; i < undo_stack.current; i++) {
+            undo_stack.states[i] = undo_stack.states[i + 1];
+        }
+        undo_stack.current--;
+    }
+
     // Add new state
     undo_stack.current++;
     undo_stack.top = undo_stack.current;
@@ -617,33 +751,80 @@ static void push_undo_state(void) {
         }
         undo_stack.states[undo_stack.current] = gdk_pixbuf_copy(current_pixbuf);
     }
+
+    // Update button sensitivity
+    gtk_widget_set_sensitive(undo_button, undo_stack.current > 0);
+    gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
 }
 
 static void undo(void) {
-    if (undo_stack.current > 0 && undo_stack.states[undo_stack.current - 1]) {
+    if (undo_stack.current > 0) {
         undo_stack.current--;
         if (current_pixbuf) {
             g_object_unref(current_pixbuf);
         }
         current_pixbuf = gdk_pixbuf_copy(undo_stack.states[undo_stack.current]);
-        update_drawing_area();
-        gtk_widget_queue_draw(drawing_area);  // Force a redraw
+        gtk_widget_queue_draw(drawing_area);
 
         // Update button sensitivity
-        gtk_widget_set_sensitive(redo_button, TRUE);
         gtk_widget_set_sensitive(undo_button, undo_stack.current > 0);
+        gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
     }
 }
 
 static void redo(void) {
     if (undo_stack.current < undo_stack.top) {
         undo_stack.current++;
-        g_object_unref(current_pixbuf);
+        if (current_pixbuf) {
+            g_object_unref(current_pixbuf);
+        }
         current_pixbuf = gdk_pixbuf_copy(undo_stack.states[undo_stack.current]);
-        update_drawing_area();
+        gtk_widget_queue_draw(drawing_area);
 
         // Update button sensitivity
-        gtk_widget_set_sensitive(undo_button, TRUE);
+        gtk_widget_set_sensitive(undo_button, undo_stack.current > 0);
         gtk_widget_set_sensitive(redo_button, undo_stack.current < undo_stack.top);
+    }
+}
+
+static void perform_crop(void) {
+    if (!current_pixbuf) return;
+    
+    // Ensure valid crop coordinates
+    int x = MIN(crop_start_x, crop_end_x);
+    int y = MIN(crop_start_y, crop_end_y);
+    int width = abs(crop_end_x - crop_start_x);
+    int height = abs(crop_end_y - crop_start_y);
+    
+    // Ensure crop region is within image bounds
+    x = CLAMP(x, 0, gdk_pixbuf_get_width(current_pixbuf));
+    y = CLAMP(y, 0, gdk_pixbuf_get_height(current_pixbuf));
+    width = CLAMP(width, 1, gdk_pixbuf_get_width(current_pixbuf) - x);
+    height = CLAMP(height, 1, gdk_pixbuf_get_height(current_pixbuf) - y);
+    
+    // Create new cropped pixbuf
+    GdkPixbuf *cropped = gdk_pixbuf_new_subpixbuf(current_pixbuf, x, y, width, height);
+    if (cropped) {
+        // First store the old pixbuf
+        GdkPixbuf *old_pixbuf = current_pixbuf;
+        
+        // Set the new cropped pixbuf
+        current_pixbuf = cropped;
+        
+        // Now push the state (after we've made the change)
+        push_undo_state();
+        
+        // Free the old pixbuf
+        g_object_unref(old_pixbuf);
+        
+        // Reset crop coordinates
+        crop_start_x = crop_start_y = crop_end_x = crop_end_y = 0;
+        is_selecting = FALSE;
+        
+        // Update the display
+        gtk_widget_queue_draw(drawing_area);
+        
+        // Disable crop button until new selection is made
+        gtk_widget_set_sensitive(crop_button, FALSE);
     }
 } 
