@@ -12,10 +12,11 @@ gboolean is_drawing = FALSE;
 gdouble last_x = 0;
 gdouble last_y = 0;
 GdkRGBA current_color = {1.0, 0.0, 0.0, 1.0}; // Default red
+GdkRGBA text_color = {1.0, 0.0, 0.0, 1.0};   // Initialize to same red color
 gint pen_width = 5;
 gboolean is_text_mode = FALSE;
-gchar *current_font = "Sans 12";
-GdkRGBA text_color = {0.0, 0.0, 0.0, 1.0}; // Default black
+static GtkWidget *font_button;
+static char *current_font = NULL;
 GtkWidget *color_button = NULL; // Add color button as global variable
 #define MAX_UNDO_STACK 20  // Maximum number of states to store
 gboolean has_changes = FALSE;  // Track if any actual drawing has occurred
@@ -27,7 +28,33 @@ gdouble crop_start_y = 0;
 gdouble crop_end_x = 0;
 gdouble crop_end_y = 0;
 GtkWidget *crop_button = NULL;  // Button to perform crop
-GtkWidget *crop_mode_button = NULL;  // Radio button for crop mode
+GtkWidget *mode_combo;
+static GtkWidget *popup_menu = NULL;
+static gboolean popup_visible = FALSE;
+
+// Add these as global variables
+static GtkWidget *mode_menu = NULL;
+static int current_mode = 0;
+
+// Add this enum definition before the mode_info array
+typedef enum {
+    MODE_DRAW,
+    MODE_TEXT,
+    MODE_CROP
+} EditorMode;
+
+// Structure to hold mode information
+typedef struct {
+    const char *icon_name;
+    const char *tooltip;
+    EditorMode mode;
+} ModeInfo;
+
+static const ModeInfo mode_info[] = {
+    {"x-office-drawing", "Draw freely on the image", MODE_DRAW},
+    {"insert-text", "Add text annotations", MODE_TEXT},
+    {"edit-cut", "Crop the image", MODE_CROP}
+};
 
 typedef struct {
     GdkPixbuf *states[MAX_UNDO_STACK];
@@ -38,6 +65,13 @@ typedef struct {
 UndoStack undo_stack = {.current = -1, .top = -1};
 GtkWidget *undo_button;
 GtkWidget *redo_button;
+
+// Add this global variable to track the current tooltip
+static char *current_tooltip = NULL;
+
+// Forward declare the functions we'll need
+static void on_menu_item_activate(GtkMenuItem *item, gpointer data);
+static gboolean on_combo_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data);
 
 // Function declarations
 static void load_image_from_file(const gchar *filename);
@@ -50,7 +84,12 @@ static void push_undo_state(void);
 static void undo(void);
 static void redo(void);
 static void perform_crop(void);
-static void on_crop_mode_toggled(GtkToggleButton *button, gpointer data);
+static void on_mode_changed(GtkComboBox *combo, gpointer data);
+static gboolean on_mode_combo_tooltip(GtkWidget *widget, gint x, gint y,
+                                    gboolean keyboard_mode, GtkTooltip *tooltip,
+                                    gpointer data);
+static void on_popup_shown(GtkWidget *popup_window, gpointer data);
+static void on_popup_hidden(GtkWidget *popup_window, gpointer data);
 
 // Callback functions
 static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
@@ -235,7 +274,7 @@ static void on_pen_width_changed(GtkSpinButton *button, gpointer data) {
 }
 
 static void on_font_set(GtkFontButton *button, gpointer data) {
-    const gchar *new_font = gtk_font_chooser_get_font(GTK_FONT_CHOOSER(button));
+    const char *new_font = gtk_font_button_get_font_name(GTK_FONT_BUTTON(button));
     if (new_font) {
         if (current_font) {
             g_free(current_font);
@@ -305,25 +344,6 @@ static void on_drawing_area_realize(GtkWidget *widget, gpointer data) {
     }
 }
 
-static void on_text_mode_toggled(GtkToggleButton *button, gpointer data) {
-    const gchar *label = gtk_button_get_label(GTK_BUTTON(button));
-    
-    if (g_strcmp0(label, "Text Mode") == 0) {
-        is_text_mode = gtk_toggle_button_get_active(button);
-    } else {
-        is_text_mode = !gtk_toggle_button_get_active(button);
-    }
-    
-    // Set appropriate cursor
-    GdkWindow *window = gtk_widget_get_window(drawing_area);
-    if (window && gtk_widget_get_realized(drawing_area)) {
-        GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(), 
-                                                    is_text_mode ? "text" : "crosshair");
-        gdk_window_set_cursor(window, cursor);
-        g_object_unref(cursor);
-    }
-}
-
 static void on_copy_clicked(GtkButton *button, gpointer data) {
     GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
     if (current_pixbuf) {
@@ -343,28 +363,6 @@ static void on_entry_activate(GtkEntry *entry, GtkDialog *dialog) {
     gtk_dialog_response(dialog, GTK_RESPONSE_ACCEPT);
 }
 
-static void on_crop_mode_toggled(GtkToggleButton *button, gpointer data) {
-    is_crop_mode = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(crop_mode_button));
-    is_text_mode = FALSE;
-    is_drawing = FALSE;
-    is_selecting = FALSE;
-    
-    // Reset crop coordinates when leaving crop mode
-    if (!is_crop_mode) {
-        crop_start_x = crop_start_y = crop_end_x = crop_end_y = 0;
-        gtk_widget_queue_draw(drawing_area);
-    }
-    
-    // Update cursor
-    if (gtk_widget_get_realized(drawing_area)) {
-        GdkWindow *window = gtk_widget_get_window(drawing_area);
-        GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(),
-            is_crop_mode ? "crosshair" : "default");
-        gdk_window_set_cursor(window, cursor);
-        g_object_unref(cursor);
-    }
-}
-
 // Main function
 int main(int argc, char *argv[]) {
     GtkWidget *window;
@@ -375,9 +373,7 @@ int main(int argc, char *argv[]) {
     GtkWidget *font_button;
     GtkWidget *save_button;
     GtkWidget *open_button;
-    GtkWidget *text_mode_button;
-    GtkWidget *draw_mode_button;
-    GtkWidget *mode_box;
+    GtkWidget *mode_label;
 
     gtk_init(&argc, &argv);
 
@@ -463,6 +459,7 @@ int main(int argc, char *argv[]) {
     // Font button
     font_button = gtk_font_button_new();
     gtk_widget_set_tooltip_text(font_button, "Select Font");
+    current_font = g_strdup("Sans 12");  // Initialize with default font
     gtk_font_button_set_font_name(GTK_FONT_BUTTON(font_button), current_font);
     g_signal_connect(font_button, "font-set", G_CALLBACK(on_font_set), NULL);
     gtk_box_pack_start(GTK_BOX(tool_box), font_button, FALSE, FALSE, 0);
@@ -471,33 +468,49 @@ int main(int argc, char *argv[]) {
     gtk_box_pack_start(GTK_BOX(hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 5);
 
     // Mode selection group
-    mode_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *mode_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_pack_start(GTK_BOX(hbox), mode_box, FALSE, FALSE, 0);
 
-    // Drawing mode radio button with icon
-    GtkWidget *draw_icon = gtk_image_new_from_icon_name("x-office-drawing", GTK_ICON_SIZE_SMALL_TOOLBAR);
-    draw_mode_button = gtk_radio_button_new(NULL);
-    gtk_button_set_image(GTK_BUTTON(draw_mode_button), draw_icon);
-    gtk_widget_set_tooltip_text(draw_mode_button, "Drawing Mode");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(draw_mode_button), TRUE);
-    g_signal_connect(draw_mode_button, "toggled", G_CALLBACK(on_text_mode_toggled), NULL);
-    gtk_box_pack_start(GTK_BOX(mode_box), draw_mode_button, FALSE, FALSE, 0);
-
-    // Text mode radio button with icon
-    GtkWidget *text_icon = gtk_image_new_from_icon_name("insert-text", GTK_ICON_SIZE_SMALL_TOOLBAR);
-    text_mode_button = gtk_radio_button_new_from_widget(GTK_RADIO_BUTTON(draw_mode_button));
-    gtk_button_set_image(GTK_BUTTON(text_mode_button), text_icon);
-    gtk_widget_set_tooltip_text(text_mode_button, "Text Mode");
-    g_signal_connect(text_mode_button, "toggled", G_CALLBACK(on_text_mode_toggled), NULL);
-    gtk_box_pack_start(GTK_BOX(mode_box), text_mode_button, FALSE, FALSE, 0);
-
-    // Crop mode radio button
-    crop_mode_button = gtk_radio_button_new_from_widget(GTK_RADIO_BUTTON(draw_mode_button));
-    GtkWidget *crop_icon = gtk_image_new_from_icon_name("edit-cut", GTK_ICON_SIZE_SMALL_TOOLBAR);
-    gtk_button_set_image(GTK_BUTTON(crop_mode_button), crop_icon);
-    gtk_widget_set_tooltip_text(crop_mode_button, "Crop Mode");
-    g_signal_connect(crop_mode_button, "toggled", G_CALLBACK(on_crop_mode_toggled), NULL);
-    gtk_box_pack_start(GTK_BOX(mode_box), crop_mode_button, FALSE, FALSE, 0);
+    // Mode selection dropdown
+    mode_label = gtk_label_new("Mode:");
+    gtk_box_pack_start(GTK_BOX(mode_box), mode_label, FALSE, FALSE, 5);
+    
+    // Create a button that looks like a combo box
+    mode_combo = gtk_button_new();
+    gtk_widget_set_tooltip_text(mode_combo, mode_info[0].tooltip);
+    
+    // Create the initial icon
+    GtkWidget *combo_image = gtk_image_new_from_icon_name(
+        mode_info[0].icon_name, GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_button_set_image(GTK_BUTTON(mode_combo), combo_image);
+    
+    // Create the popup menu
+    mode_menu = gtk_menu_new();
+    
+    // Add menu items
+    for (int i = 0; i < G_N_ELEMENTS(mode_info); i++) {
+        GtkWidget *item = gtk_menu_item_new();
+        GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *icon = gtk_image_new_from_icon_name(
+            mode_info[i].icon_name, GTK_ICON_SIZE_MENU);
+        GtkWidget *label = gtk_label_new(mode_info[i].tooltip);
+        
+        gtk_container_add(GTK_CONTAINER(hbox), icon);
+        gtk_container_add(GTK_CONTAINER(hbox), label);
+        gtk_container_add(GTK_CONTAINER(item), hbox);
+        gtk_widget_show_all(item);
+        
+        gtk_menu_shell_append(GTK_MENU_SHELL(mode_menu), item);
+        g_signal_connect(item, "activate", 
+                        G_CALLBACK(on_menu_item_activate), 
+                        GINT_TO_POINTER(i));
+    }
+    
+    // Connect the button click to show the menu
+    g_signal_connect(mode_combo, "button-press-event",
+                    G_CALLBACK(on_combo_button_press), NULL);
+    
+    gtk_box_pack_start(GTK_BOX(mode_box), mode_combo, FALSE, FALSE, 0);
 
     // Add a separator
     gtk_box_pack_start(GTK_BOX(hbox), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 5);
@@ -712,14 +725,9 @@ static void add_text_at_position(gdouble x, gdouble y) {
 
     content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     entry = gtk_entry_new();
-    
-    // Connect the activate signal (Enter key) to submit the dialog
     g_signal_connect(entry, "activate", G_CALLBACK(on_entry_activate), dialog);
-    
     gtk_container_add(GTK_CONTAINER(content_area), entry);
     gtk_widget_show_all(dialog);
-    
-    // Set focus to the entry widget
     gtk_widget_grab_focus(entry);
 
     response = gtk_dialog_run(GTK_DIALOG(dialog));
@@ -735,8 +743,20 @@ static void add_text_at_position(gdouble x, gdouble y) {
             cairo_paint(cr);
 
             cairo_set_source_rgba(cr, text_color.red, text_color.green, text_color.blue, text_color.alpha);
-            cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-            cairo_set_font_size(cr, 20.0);
+            
+            // Parse the font string to get size and family
+            PangoFontDescription *font_desc = pango_font_description_from_string(current_font);
+            double font_size = pango_font_description_get_size(font_desc) / PANGO_SCALE;
+            const char *font_family = pango_font_description_get_family(font_desc);
+            
+            // Set the font
+            cairo_select_font_face(cr, 
+                                 font_family ? font_family : "Sans",
+                                 CAIRO_FONT_SLANT_NORMAL,
+                                 CAIRO_FONT_WEIGHT_NORMAL);
+            cairo_set_font_size(cr, font_size > 0 ? font_size : 12);
+            
+            pango_font_description_free(font_desc);
 
             cairo_move_to(cr, x, y);
             cairo_show_text(cr, text);
@@ -749,11 +769,7 @@ static void add_text_at_position(gdouble x, gdouble y) {
             if (new_pixbuf) {
                 g_object_unref(current_pixbuf);
                 current_pixbuf = new_pixbuf;
-                
                 push_undo_state();
-                gtk_widget_set_sensitive(undo_button, TRUE);
-                gtk_widget_set_sensitive(redo_button, FALSE);
-                
                 gtk_widget_queue_draw(drawing_area);
             }
 
@@ -868,4 +884,155 @@ static void perform_crop(void) {
         // Disable crop button until new selection is made
         gtk_widget_set_sensitive(crop_button, FALSE);
     }
+}
+
+static void on_mode_changed(GtkComboBox *combo, gpointer data) {
+    int active = gtk_combo_box_get_active(combo);
+    
+    switch (active) {
+        case MODE_DRAW:
+            is_text_mode = FALSE;
+            is_crop_mode = FALSE;
+            if (gtk_widget_get_realized(drawing_area)) {
+                GdkWindow *window = gtk_widget_get_window(drawing_area);
+                GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(), "crosshair");
+                gdk_window_set_cursor(window, cursor);
+                g_object_unref(cursor);
+            }
+            break;
+            
+        case MODE_TEXT:
+            is_text_mode = TRUE;
+            is_crop_mode = FALSE;
+            if (gtk_widget_get_realized(drawing_area)) {
+                GdkWindow *window = gtk_widget_get_window(drawing_area);
+                GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(), "text");
+                gdk_window_set_cursor(window, cursor);
+                g_object_unref(cursor);
+            }
+            break;
+            
+        case MODE_CROP:
+            is_text_mode = FALSE;
+            is_crop_mode = TRUE;
+            if (gtk_widget_get_realized(drawing_area)) {
+                GdkWindow *window = gtk_widget_get_window(drawing_area);
+                GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(), "crosshair");
+                gdk_window_set_cursor(window, cursor);
+                g_object_unref(cursor);
+            }
+            break;
+    }
+}
+
+// Modified tooltip handler
+static gboolean on_mode_combo_tooltip(GtkWidget *widget, gint x, gint y,
+                                    gboolean keyboard_mode, GtkTooltip *tooltip,
+                                    gpointer data) {
+    GtkComboBox *combo = GTK_COMBO_BOX(widget);
+    GtkTreeModel *model = gtk_combo_box_get_model(combo);
+    GtkTreeIter iter;
+    
+    if (popup_visible && popup_menu) {
+        // Get the tree view from the popup
+        GtkWidget *tree_view = gtk_bin_get_child(GTK_BIN(popup_menu));
+        if (GTK_IS_TREE_VIEW(tree_view)) {
+            gint wx, wy;
+            GtkTreePath *path = NULL;
+            
+            // Convert coordinates
+            gtk_widget_translate_coordinates(widget, tree_view, x, y, &wx, &wy);
+            
+            if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(tree_view), 
+                                             wx, wy, &path, NULL, NULL, NULL)) {
+                if (gtk_tree_model_get_iter(model, &iter, path)) {
+                    gchar *tooltip_text;
+                    gtk_tree_model_get(model, &iter, 1, &tooltip_text, -1);
+                    gtk_tooltip_set_text(tooltip, tooltip_text);
+                    g_free(tooltip_text);
+                    gtk_tree_path_free(path);
+                    return TRUE;
+                }
+                if (path) {
+                    gtk_tree_path_free(path);
+                }
+            }
+        }
+    } else {
+        // Show tooltip for selected item when popup is closed
+        gint active = gtk_combo_box_get_active(combo);
+        if (active >= 0 && gtk_tree_model_iter_nth_child(model, &iter, NULL, active)) {
+            gchar *tooltip_text;
+            gtk_tree_model_get(model, &iter, 1, &tooltip_text, -1);
+            gtk_tooltip_set_text(tooltip, tooltip_text);
+            g_free(tooltip_text);
+            return TRUE;
+        }
+    }
+    
+    return FALSE;
+}
+
+// Add these signal handlers
+static void on_popup_shown(GtkWidget *popup_window, gpointer data) {
+    popup_visible = TRUE;
+    popup_menu = popup_window;
+}
+
+static void on_popup_hidden(GtkWidget *popup_window, gpointer data) {
+    popup_visible = FALSE;
+    popup_menu = NULL;
+}
+
+// Handler for menu item activation
+static void on_menu_item_activate(GtkMenuItem *item, gpointer data) {
+    int mode = GPOINTER_TO_INT(data);
+    current_mode = mode;
+    
+    // Update the button's icon
+    GtkWidget *image = gtk_button_get_image(GTK_BUTTON(mode_combo));
+    if (image && GTK_IS_IMAGE(image)) {
+        gtk_image_set_from_icon_name(GTK_IMAGE(image), 
+                                   mode_info[mode].icon_name, 
+                                   GTK_ICON_SIZE_SMALL_TOOLBAR);  // Use consistent icon size
+    }
+    gtk_widget_set_tooltip_text(mode_combo, mode_info[mode].tooltip);
+    
+    // Update the application mode
+    switch (mode) {
+        case MODE_DRAW:
+            is_text_mode = FALSE;
+            is_crop_mode = FALSE;
+            break;
+        case MODE_TEXT:
+            is_text_mode = TRUE;
+            is_crop_mode = FALSE;
+            break;
+        case MODE_CROP:
+            is_text_mode = FALSE;
+            is_crop_mode = TRUE;
+            break;
+    }
+    
+    // Update cursor
+    if (gtk_widget_get_realized(drawing_area)) {
+        GdkWindow *window = gtk_widget_get_window(drawing_area);
+        GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(),
+            is_text_mode ? "text" : "crosshair");
+        gdk_window_set_cursor(window, cursor);
+        g_object_unref(cursor);
+    }
+}
+
+// Handler for combo box clicked
+static gboolean on_combo_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+    if (event->button == 1) {  // Left click
+        gtk_menu_popup_at_widget(GTK_MENU(mode_menu), 
+                               widget,
+                               GDK_GRAVITY_SOUTH_WEST,
+                               GDK_GRAVITY_NORTH_WEST,
+                               (GdkEvent*)event);
+        return TRUE;
+    }
+    return FALSE;
 } 
